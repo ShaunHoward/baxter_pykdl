@@ -35,7 +35,7 @@ import rospy
 
 import PyKDL as kdl
 
-import hrl_geom.transformations as trans
+#import hrl_geom.transformations as trans
 from hrl_geom.pose_converter import PoseConv
 from kdl_parser import kdl_tree_from_urdf_model
 from urdf_parser_py.urdf import URDF
@@ -78,19 +78,16 @@ class KDLKinematics(object):
         self.joint_safety_upper = []
         self.joint_types = []
         for jnt_name in self.get_joint_names():
-            jnt = urdf.joints[jnt_name]
-            if jnt.limits is not None:
-                self.joint_limits_lower.append(jnt.limits.lower)
-                self.joint_limits_upper.append(jnt.limits.upper)
+            jnt = urdf.joint_map[jnt_name]
+            if jnt.limit is not None:
+                self.joint_limits_lower.append(jnt.limit.lower)
+                self.joint_limits_upper.append(jnt.limit.upper)
             else:
                 self.joint_limits_lower.append(None)
                 self.joint_limits_upper.append(None)
-            if jnt.safety is not None:
-                self.joint_safety_lower.append(jnt.safety.lower)
-                self.joint_safety_upper.append(jnt.safety.upper)
-            elif jnt.limits is not None:
-                self.joint_safety_lower.append(jnt.limits.lower)
-                self.joint_safety_upper.append(jnt.limits.upper)
+            if jnt.limit is not None:
+                self.joint_safety_lower.append(jnt.limit.lower)
+                self.joint_safety_upper.append(jnt.limit.upper)
             else:
                 self.joint_safety_lower.append(None)
                 self.joint_safety_upper.append(None)
@@ -203,10 +200,19 @@ class KDLKinematics(object):
     def inverse(self, pose, q_guess=None, min_joints=None, max_joints=None):
         pos, rot = PoseConv.to_pos_rot(pose)
         pos_kdl = kdl.Vector(pos[0,0], pos[1,0], pos[2,0])
-        rot_kdl = kdl.Rotation(rot[0,0], rot[0,1], rot[0,2],
-                               rot[1,0], rot[1,1], rot[1,2],
-                               rot[2,0], rot[2,1], rot[2,2])
-        frame_kdl = kdl.Frame(rot_kdl, pos_kdl)
+        if rot is not None:
+            rot_kdl = kdl.Rotation(rot[0, 0], rot[0, 1], rot[0, 2],
+                                   rot[1, 0], rot[1, 1], rot[1, 2],
+                                   rot[2, 0], rot[2, 1], rot[2, 2])
+        else:
+            rot_kdl = None
+
+        # get frame kdl
+        if rot_kdl is not None:
+            frame_kdl = kdl.Frame(rot_kdl, pos_kdl)
+        else:
+            frame_kdl = kdl.Frame(pos_kdl)
+
         if min_joints is None:
             min_joints = self.joint_safety_lower
         if max_joints is None:
@@ -216,7 +222,7 @@ class KDLKinematics(object):
         ik_p_kdl = kdl.ChainIkSolverPos_NR_JL(self.chain, mins_kdl, maxs_kdl, 
                                               self._fk_kdl, self._ik_v_kdl)
 
-        if q_guess == None:
+        if q_guess is None:
             # use the midpoint of the joint limits as the guess
             lower_lim = np.where(np.isfinite(min_joints), min_joints, 0.)
             upper_lim = np.where(np.isfinite(max_joints), max_joints, 0.)
