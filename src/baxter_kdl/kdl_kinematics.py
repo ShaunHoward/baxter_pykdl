@@ -200,7 +200,7 @@ class KDLKinematics(object):
     # @return np.array of joint angles needed to reach the pose or None if no solution was found.
     def inverse(self, position, orientation=None, q_guess=None, min_joints=None, max_joints=None):
         pos_kdl = kdl.Vector(position[0], position[1], position[2])
-        if orientation is not None:
+        if orientation is not None and len(orientation) == 4:
             rot_kdl = kdl.Rotation()
             rot_kdl = rot_kdl.Quaternion(orientation[0], orientation[1],
                                          orientation[2], orientation[3])
