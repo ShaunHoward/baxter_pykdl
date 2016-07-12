@@ -190,20 +190,20 @@ class KDLKinematics(object):
     ##
     # Inverse kinematics for a given pose, returning the joint angles required
     # to obtain the target pose.
-    # @param pose Pose-like object represeting the target pose of the end effector.
+    # @param position the 3-d position
+    # @param orientation the 4-d orientation
     # @param q_guess List of joint angles to seed the IK search.
     # @param min_joints List of joint angles to lower bound the angles on the IK search.
     #                   If None, the safety limits are used.
     # @param max_joints List of joint angles to upper bound the angles on the IK search.
     #                   If None, the safety limits are used.
     # @return np.array of joint angles needed to reach the pose or None if no solution was found.
-    def inverse(self, pose, q_guess=None, min_joints=None, max_joints=None):
-        pos, rot = PoseConv.to_pos_rot(pose)
-        pos_kdl = kdl.Vector(pos[0,0], pos[1,0], pos[2,0])
-        if rot is not None:
-            rot_kdl = kdl.Rotation(rot[0, 0], rot[0, 1], rot[0, 2],
-                                   rot[1, 0], rot[1, 1], rot[1, 2],
-                                   rot[2, 0], rot[2, 1], rot[2, 2])
+    def inverse(self, position, orientation=None, q_guess=None, min_joints=None, max_joints=None):
+        pos_kdl = kdl.Vector(position[0], position[1], position[2])
+        if orientation is not None:
+            rot_kdl = kdl.Rotation()
+            rot_kdl = rot_kdl.Quaternion(orientation[0], orientation[1],
+                                         orientation[2], orientation[3])
         else:
             rot_kdl = None
 
