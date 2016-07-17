@@ -100,16 +100,20 @@ class KDLKinematics(object):
                                             for jl in self.joint_limits_lower])
         self.joint_limits_upper = np.array([replace_none(jl, np.inf) 
                                             for jl in self.joint_limits_upper])
+        # reverse these arrays
         self.joint_safety_lower = np.array([replace_none(jl, -np.inf) 
-                                            for jl in self.joint_safety_lower])
+                                            for jl in self.joint_safety_lower])[::-1]
         self.joint_safety_upper = np.array([replace_none(jl, np.inf) 
-                                            for jl in self.joint_safety_upper])
+                                            for jl in self.joint_safety_upper])[::-1]
         self.joint_types = np.array(self.joint_types)
         self.num_joints = len(self.get_joint_names())
 
         self._fk_kdl = kdl.ChainFkSolverPos_recursive(self.chain)
         self._ik_v_kdl = kdl.ChainIkSolverVel_pinv(self.chain)
-        self._ik_p_kdl = kdl.ChainIkSolverPos_NR(self.chain, self._fk_kdl, self._ik_v_kdl)
+        mins_kdl = joint_list_to_kdl(self.joint_safety_lower)
+        maxs_kdl = joint_list_to_kdl(self.joint_safety_upper)
+        self._ik_p_kdl = kdl.ChainIkSolverPos_NR_JL(self.chain, mins_kdl, maxs_kdl,
+                                                    self._fk_kdl, self._ik_v_kdl)
         self._jac_kdl = kdl.ChainJntToJacSolver(self.chain)
         self._dyn_kdl = kdl.ChainDynParam(self.chain, kdl.Vector.Zero())
 
@@ -127,50 +131,63 @@ class KDLKinematics(object):
     def get_joint_limits(self):
         return self.joint_limits_lower, self.joint_limits_upper
 
-    def FK(self, q, link_number=None):
-        if link_number is not None:
-            end_link = self.get_link_names(fixed=False)[link_number]
-        else:
-            end_link = None
-        homo_mat = self.forward(q, end_link)
+    ##
+    # Forward kinematics using the joint angle positions of the robot.
+    # @param joint_values the list of joint angles of the arm of the robot
+    # @return the joint angles of the forward kinematics transformation
+    def forward(self, joint_values=None):
+        end_frame = kdl.Frame()
+        self._fk_kdl.JntToCart(joint_list_to_kdl(joint_values), end_frame)
+        pos = end_frame.p
+        rot = kdl.Rotation(end_frame.M)
+        rot = rot.GetQuaternion()
+        return np.array([pos[0], pos[1], pos[2],
+                         rot[0], rot[1], rot[2], rot[3]])
+
+    def FK(self, base_link, end_link):
+        # if link_number is not None:
+        #     end_link = self.get_link_names(fixed=False)[link_number]
+        # else:
+        #     end_link = None
+        homo_mat = self.forward_2(q, self.base_link, self.end_link)
         pos, rot = PoseConv.to_pos_rot(homo_mat)
         return pos, rot
-
 
     ##
     # Forward kinematics on the given joint angles, returning the location of the
     # end_link in the base_link's frame.
     # @param q List of joint angles for the full kinematic chain.
-    # @param end_link Name of the link the pose should be obtained for.
     # @param base_link Name of the root link frame the end_link should be found in.
+    # @param end_link Name of the link the pose should be obtained for.
     # @return 4x4 numpy.mat homogeneous transformation
-    def forward(self, q, end_link=None, base_link=None):
+    def forward_2(self, q, base_link, end_link):
         link_names = self.get_link_names()
-        if end_link is None:
-            end_link = self.chain.getNrOfSegments()
+
+        end_link = end_link.split("/")[-1]
+        if end_link in link_names:
+            end_link = link_names.index(end_link)
         else:
-            end_link = end_link.split("/")[-1]
-            if end_link in link_names:
-                end_link = link_names.index(end_link)
-            else:
-                print "Target segment %s not in KDL chain" % end_link
-                return None
-        if base_link is None:
-            base_link = 0
+            print "Target segment %s not in KDL chain" % end_link
+            return None
+
+        base_link = base_link.split("/")[-1]
+        if base_link in link_names:
+            base_link = link_names.index(base_link)
         else:
-            base_link = base_link.split("/")[-1]
-            if base_link in link_names:
-                base_link = link_names.index(base_link)
-            else:
-                print "Base segment %s not in KDL chain" % base_link
-                return None
+            print "Base segment %s not in KDL chain" % base_link
+            return None
+
         base_trans = self._do_kdl_fk(q, base_link)
         if base_trans is None:
             print "FK KDL failure on base transformation."
+            return None
         end_trans = self._do_kdl_fk(q, end_link)
         if end_trans is None:
             print "FK KDL failure on end transformation."
-        return base_trans**-1 * end_trans
+            return None
+        homo_mat = base_trans ** -1 * end_trans
+        pos, rot = PoseConv.to_pos_rot(homo_mat)
+        return pos, rot
 
     def _do_kdl_fk(self, q, link_number):
         endeffec_frame = kdl.Frame()
@@ -180,10 +197,10 @@ class KDLKinematics(object):
         if kinematics_status >= 0:
             p = endeffec_frame.p
             M = endeffec_frame.M
-            return np.mat([[M[0,0], M[0,1], M[0,2], p.x()], 
-                           [M[1,0], M[1,1], M[1,2], p.y()], 
-                           [M[2,0], M[2,1], M[2,2], p.z()],
-                           [     0,      0,      0,     1]])
+            return np.mat([[M[0, 0], M[0, 1], M[0, 2], p.x()],
+                           [M[1, 0], M[1, 1], M[1, 2], p.y()],
+                           [M[2, 0], M[2, 1], M[2, 2], p.z()],
+                           [0, 0, 0, 1]])
         else:
             return None
 
@@ -198,7 +215,7 @@ class KDLKinematics(object):
     # @param max_joints List of joint angles to upper bound the angles on the IK search.
     #                   If None, the safety limits are used.
     # @return np.array of joint angles needed to reach the pose or None if no solution was found.
-    def inverse(self, position, orientation=None, q_guess=None, min_joints=None, max_joints=None):
+    def inverse(self, position, orientation=None, q_guess=None):
         pos_kdl = kdl.Vector(position[0], position[1], position[2])
         if orientation is not None and len(orientation) == 4:
             rot_kdl = kdl.Rotation()
@@ -213,14 +230,13 @@ class KDLKinematics(object):
         else:
             frame_kdl = kdl.Frame(pos_kdl)
 
-        if min_joints is None:
-            min_joints = self.joint_safety_lower
-        if max_joints is None:
-            max_joints = self.joint_safety_upper
-        mins_kdl = joint_list_to_kdl(min_joints)
-        maxs_kdl = joint_list_to_kdl(max_joints)
-        ik_p_kdl = kdl.ChainIkSolverPos_NR_JL(self.chain, mins_kdl, maxs_kdl, 
-                                              self._fk_kdl, self._ik_v_kdl)
+        min_joints = self.joint_safety_lower
+        max_joints = self.joint_safety_upper
+        # mins_kdl = joint_list_to_kdl(min_joints)
+        # maxs_kdl = joint_list_to_kdl(max_joints)
+        # ik_p_kdl = kdl.ChainIkSolverPos_NR_JL(self.chain, mins_kdl, maxs_kdl,
+        #                                       self._fk_kdl, self._ik_v_kdl)
+        ik_p_kdl = self._ik_p_kdl
 
         if q_guess is None:
             # use the midpoint of the joint limits as the guess
