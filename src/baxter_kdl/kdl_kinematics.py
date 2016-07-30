@@ -3,6 +3,7 @@
 # Provides wrappers for PyKDL kinematics.
 #
 # Copyright (c) 2012, Georgia Tech Research Corporation
+# Additional rights reserved, 2016, Case Western Reserve University
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -27,7 +28,7 @@
 # OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
-# Author: Kelsey Hawkins
+# Author: Kelsey Hawkins, Shaun Howard
 
 import numpy as np
 
@@ -40,6 +41,7 @@ from hrl_geom.pose_converter import PoseConv
 from kdl_parser import kdl_tree_from_urdf_model
 from urdf_parser_py.urdf import URDF
 
+
 def create_kdl_kin(base_link, end_link, urdf_filename=None):
     if urdf_filename is None:
         robot = URDF.load_from_parameter_server(verbose=False)
@@ -50,6 +52,7 @@ def create_kdl_kin(base_link, end_link, urdf_filename=None):
 ##
 # Provides wrappers for performing KDL functions on a designated kinematic
 # chain given a URDF representation of a robot.
+
 
 class KDLKinematics(object):
     ##
@@ -131,78 +134,26 @@ class KDLKinematics(object):
     def get_joint_limits(self):
         return self.joint_limits_lower, self.joint_limits_upper
 
-    ##
-    # Forward kinematics using the joint angle positions of the robot.
-    # @param joint_values the list of joint angles of the arm of the robot
-    # @return the joint angles of the forward kinematics transformation
-    def forward(self, joint_values=None):
+    def forward(self, q, link_number=None):
         end_frame = kdl.Frame()
-        self._fk_kdl.JntToCart(joint_list_to_kdl(joint_values), end_frame)
+        if link_number is not None:
+            # do a specific link number
+            self._fk_kdl.JntToCart(joint_list_to_kdl(q), end_frame, link_number)
+        else:
+            # do end link number
+            self._fk_kdl.JntToCart(joint_list_to_kdl(q), end_frame)
         pos = end_frame.p
         rot = kdl.Rotation(end_frame.M)
         rot = rot.GetQuaternion()
         return np.array([pos[0], pos[1], pos[2],
                          rot[0], rot[1], rot[2], rot[3]])
 
-    def FK(self, base_link, end_link):
-        # if link_number is not None:
-        #     end_link = self.get_link_names(fixed=False)[link_number]
-        # else:
-        #     end_link = None
-        homo_mat = self.forward_2(q, self.base_link, self.end_link)
-        pos, rot = PoseConv.to_pos_rot(homo_mat)
-        return pos, rot
-
-    ##
-    # Forward kinematics on the given joint angles, returning the location of the
-    # end_link in the base_link's frame.
-    # @param q List of joint angles for the full kinematic chain.
-    # @param base_link Name of the root link frame the end_link should be found in.
-    # @param end_link Name of the link the pose should be obtained for.
-    # @return 4x4 numpy.mat homogeneous transformation
-    def forward_2(self, q, base_link, end_link):
+    def forward_all(self, q):
         link_names = self.get_link_names()
-
-        end_link = end_link.split("/")[-1]
-        if end_link in link_names:
-            end_link = link_names.index(end_link)
-        else:
-            print "Target segment %s not in KDL chain" % end_link
-            return None
-
-        base_link = base_link.split("/")[-1]
-        if base_link in link_names:
-            base_link = link_names.index(base_link)
-        else:
-            print "Base segment %s not in KDL chain" % base_link
-            return None
-
-        base_trans = self._do_kdl_fk(q, base_link)
-        if base_trans is None:
-            print "FK KDL failure on base transformation."
-            return None
-        end_trans = self._do_kdl_fk(q, end_link)
-        if end_trans is None:
-            print "FK KDL failure on end transformation."
-            return None
-        homo_mat = base_trans ** -1 * end_trans
-        pos, rot = PoseConv.to_pos_rot(homo_mat)
-        return pos, rot
-
-    def _do_kdl_fk(self, q, link_number):
-        endeffec_frame = kdl.Frame()
-        kinematics_status = self._fk_kdl.JntToCart(joint_list_to_kdl(q),
-                                                   endeffec_frame,
-                                                   link_number)
-        if kinematics_status >= 0:
-            p = endeffec_frame.p
-            M = endeffec_frame.M
-            return np.mat([[M[0, 0], M[0, 1], M[0, 2], p.x()],
-                           [M[1, 0], M[1, 1], M[1, 2], p.y()],
-                           [M[2, 0], M[2, 1], M[2, 2], p.z()],
-                           [0, 0, 0, 1]])
-        else:
-            return None
+        link_fwd = []
+        for end_link in link_names:
+            link_fwd.append(self.forward(q, link_names.index(end_link)))
+        return np.mat(link_fwd)
 
     ##
     # Inverse kinematics for a given pose, returning the joint angles required
@@ -232,10 +183,6 @@ class KDLKinematics(object):
 
         min_joints = self.joint_safety_lower
         max_joints = self.joint_safety_upper
-        # mins_kdl = joint_list_to_kdl(min_joints)
-        # maxs_kdl = joint_list_to_kdl(max_joints)
-        # ik_p_kdl = kdl.ChainIkSolverPos_NR_JL(self.chain, mins_kdl, maxs_kdl,
-        #                                       self._fk_kdl, self._ik_v_kdl)
         ik_p_kdl = self._ik_p_kdl
 
         if q_guess is None:
