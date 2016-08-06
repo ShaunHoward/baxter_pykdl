@@ -36,7 +36,7 @@ import rospy
 
 import PyKDL as kdl
 
-#import hrl_geom.transformations as trans
+# import hrl_geom.transformations as trans
 from hrl_geom.pose_converter import PoseConv
 from kdl_parser import kdl_tree_from_urdf_model
 from urdf_parser_py.urdf import URDF
@@ -95,11 +95,13 @@ class KDLKinematics(object):
                 self.joint_safety_lower.append(None)
                 self.joint_safety_upper.append(None)
             self.joint_types.append(jnt.joint_type)
+
         def replace_none(x, v):
             if x is None:
                 return v
             return x
-        self.joint_limits_lower = np.array([replace_none(jl, -np.inf) 
+
+        self.joint_limits_lower = np.array([replace_none(jl, -np.inf)
                                             for jl in self.joint_limits_lower])
         self.joint_limits_upper = np.array([replace_none(jl, np.inf) 
                                             for jl in self.joint_limits_upper])
@@ -118,7 +120,7 @@ class KDLKinematics(object):
         self._ik_p_kdl = kdl.ChainIkSolverPos_NR_JL(self.chain, mins_kdl, maxs_kdl,
                                                     self._fk_kdl, self._ik_v_kdl)
         self._jac_kdl = kdl.ChainJntToJacSolver(self.chain)
-        self._dyn_kdl = kdl.ChainDynParam(self.chain, kdl.Vector.Zero())
+        self._dyn_kdl = kdl.ChainDynParam(self.chain, kdl.Vector().Zero())
 
     ##
     # @return List of link names in the kinematic chain.
@@ -187,8 +189,8 @@ class KDLKinematics(object):
 
         if q_guess is None:
             # use the midpoint of the joint limits as the guess
-            lower_lim = np.where(np.isfinite(min_joints), min_joints, 0.)
-            upper_lim = np.where(np.isfinite(max_joints), max_joints, 0.)
+            lower_lim = np.where(np.isfinite(min_joints), min_joints, [0.])
+            upper_lim = np.where(np.isfinite(max_joints), max_joints, [0.])
             q_guess = (lower_lim + upper_lim) / 2.0
             q_guess = np.where(np.isnan(q_guess), [0.]*len(q_guess), q_guess)
 
@@ -205,11 +207,11 @@ class KDLKinematics(object):
     # @param pose Pose-like object represeting the target pose of the end effector.
     # @param timeout Time in seconds to look for a solution.
     # @return np.array of joint angles needed to reach the pose or None if no solution was found.
-    def inverse_search(self, pose, timeout=1.):
+    def inverse_search(self, position, orientation, timeout=1.):
         st_time = rospy.get_time()
         while not rospy.is_shutdown() and rospy.get_time() - st_time < timeout:
             q_init = self.random_joint_angles()
-            q_ik = self.inverse(pose, q_init)
+            q_ik = self.inverse(position, orientation, q_guess=q_init)
             if q_ik is not None:
                 return q_ik
         return None
@@ -227,7 +229,7 @@ class KDLKinematics(object):
         if pos is not None:
             ee_pos = self.forward(q)[:3,3]
             pos_kdl = kdl.Vector(pos[0]-ee_pos[0], pos[1]-ee_pos[1], 
-                                  pos[2]-ee_pos[2])
+                                 pos[2]-ee_pos[2])
             j_kdl.changeRefPoint(pos_kdl)
         return kdl_to_mat(j_kdl)
 
@@ -257,6 +259,11 @@ class KDLKinematics(object):
         lower_lim = self.joint_limits_lower
         upper_lim = self.joint_limits_upper
         return np.all([q >= lower_lim, q <= upper_lim], 0)
+
+    def all_joints_at_limits(self, q):
+        lower_lim = self.joint_limits_lower
+        upper_lim = self.joint_limits_upper
+        return np.all([q < lower_lim, q > upper_lim], 0)
 
     ##
     # Tests to see if the given joint angles are in the joint safety limits.
@@ -308,10 +315,10 @@ class KDLKinematics(object):
     ##
     # Performs an IK search while trying to balance the demands of reaching the goal,
     # maintaining a posture, and prioritizing rotation or position.
-    def inverse_biased(self, pose, q_init, q_bias, q_bias_weights, rot_weight=1., 
+    def inverse_biased(self, position, orientation, q_bias, q_bias_weights, rot_weight=1., 
                        bias_vel=0.01, num_iter=100):
-        # This code is potentially volitile
-        q_out = np.mat(self.inverse_search(pose)).T
+        # This code is potentially volatile
+        q_out = np.mat(self.inverse_search(position, orientation)).T
         for i in range(num_iter):
             pos_fk, rot_fk = PoseConv.to_pos_rot(self.forward(q_out))
             delta_twist = np.mat(np.zeros((6, 1)))
@@ -324,7 +331,7 @@ class KDLKinematics(object):
             J = self.jacobian(q_out)
             J[3:6,:] *= np.sqrt(rot_weight)
             delta_twist[3:6,0] *= np.sqrt(rot_weight)
-            J_tinv = np.linalg.inv(J.T * J + np.diag(q_bias_weights) * np.eye(len(q_init))) * J.T
+            J_tinv = np.linalg.inv(J.T * J + np.diag(q_bias_weights) * np.eye(len(q_bias))) * J.T
             q_bias_diff = q_bias - q_out
             q_bias_diff_normed = q_bias_diff * bias_vel / np.linalg.norm(q_bias_diff)
             delta_q = q_bias_diff_normed + J_tinv * (delta_twist - J * q_bias_diff_normed)
@@ -334,14 +341,13 @@ class KDLKinematics(object):
 
     ##
     # inverse_biased with random restarts.
-    def inverse_biased_search(self, pos, rot, q_bias, q_bias_weights, rot_weight=1., 
+    def inverse_biased_search(self, position, orientation, q_bias, q_bias_weights, rot_weight=1., 
                               bias_vel=0.01, num_iter=100, num_search=20):
-        # This code is potentially volitile
+        # This code is potentially volatile
         q_sol_min = []
         min_val = 1000000.
         for i in range(num_search):
-            q_init = self.random_joint_angles()
-            q_sol = self.inverse_biased(pos, rot, q_init, q_bias, q_bias_weights, rot_weight=1., 
+            q_sol = self.inverse_biased(position, orientation, q_bias, q_bias_weights, rot_weight=rot_weight,
                                         bias_vel=bias_vel, num_iter=num_iter)
             cur_val = np.linalg.norm(np.diag(q_bias_weights) * (q_sol - q_bias)) 
             if cur_val < min_val:
@@ -354,13 +360,15 @@ def kdl_to_mat(m):
     mat =  np.mat(np.zeros((m.rows(), m.columns())))
     for i in range(m.rows()):
         for j in range(m.columns()):
-            mat[i,j] = m[i,j]
+            mat[i, j] = m[i, j]
     return mat
 
+
 def joint_kdl_to_list(q):
-    if q == None:
+    if not q:
         return None
     return [q[i] for i in range(q.rows())]
+
 
 def joint_list_to_kdl(q):
     if q is None:
@@ -372,8 +380,10 @@ def joint_list_to_kdl(q):
         q_kdl[i] = q_i
     return q_kdl
 
+
 def main():
     import sys
+
     def usage():
         print("Tests for kdl_parser:\n")
         print("kdl_parser <urdf file>")
